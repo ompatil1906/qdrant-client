@@ -152,3 +152,40 @@ def test_to_order_value_reads_a_bare_date_as_utc_midnight() -> None:
     only visible on a client outside UTC."""
     assert to_order_value(date(2021, 1, 1)) == 1609459200000000  # 2021-01-01T00:00:00Z
     assert to_order_value("2021-01-01") == 1609459200000000
+
+
+
+def test_scroll_order_by_keeps_submicrosecond_order() -> None:
+    # Two timestamps in the same microsecond must not compare equal: the later
+    # nanosecond sorts after the earlier one, ascending.
+    from qdrant_client import QdrantClient, models
+
+    client = QdrantClient(":memory:")
+    client.create_collection(
+        "nanosecond_order",
+        vectors_config=models.VectorParams(size=2, distance=models.Distance.DOT),
+    )
+    client.upsert(
+        "nanosecond_order",
+        points=[
+            models.PointStruct(
+                id=1,
+                vector=[1.0, 0.0],
+                payload={"time": "2024-01-01T00:00:00.000000001Z"},
+            ),
+            models.PointStruct(
+                id=2,
+                vector=[1.0, 0.0],
+                payload={"time": "2024-01-01T00:00:00Z"},
+            ),
+        ],
+    )
+    records, _ = client.scroll(
+        "nanosecond_order",
+        order_by=models.OrderBy(key="time", direction=models.Direction.ASC),
+        limit=10,
+    )
+    assert [record.id for record in records] == [2, 1]
+    # exposed order_value stays on the microsecond scale used by the server
+    assert records[0].order_value == records[1].order_value
+    client.close()

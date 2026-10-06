@@ -58,6 +58,7 @@ from qdrant_client.local.multi_distances import (
     calculate_multi_distance_core,
 )
 from qdrant_client.local.json_path_parser import JsonPathItem, parse_json_path
+from qdrant_client.local.datetime_utils import submicro_nanos
 from qdrant_client.local.order_by import to_order_value
 from qdrant_client.local.payload_filters import (
     calculate_payload_mask,
@@ -2185,7 +2186,7 @@ class LocalCollection:
         if isinstance(order_by, str):
             order_by = models.OrderBy(key=order_by)
 
-        value_and_ids: list[tuple[OrderValue, ExtendedPointId, int]] = []
+        value_and_ids: list[tuple[OrderValue, int, ExtendedPointId, int]] = []
 
         for external_id, internal_id in self.ids.items():
             # get order-by values for id
@@ -2197,14 +2198,18 @@ class LocalCollection:
             for value in payload_values:
                 ordering_value = to_order_value(value)
                 if ordering_value is not None:
-                    value_and_ids.append((ordering_value, external_id, internal_id))
+                    # datetime payloads can differ only past the microsecond.
+                    # order_value stays in microseconds (server congruence), and
+                    # the remainder is a tie-break so ...000001 sorts after ...000000.
+                    remainder = submicro_nanos(value) if isinstance(value, str) else 0
+                    value_and_ids.append((ordering_value, remainder, external_id, internal_id))
 
         direction = order_by.direction if order_by.direction is not None else models.Direction.ASC
 
         should_reverse = direction == models.Direction.DESC
 
-        # sort by value only
-        value_and_ids.sort(key=lambda x: x[0], reverse=should_reverse)
+        # microseconds first, then leftover nanoseconds, in the same direction
+        value_and_ids.sort(key=lambda x: (x[0], x[1]), reverse=should_reverse)
 
         mask = self._payload_and_non_deleted_mask(scroll_filter)
 
@@ -2215,7 +2220,7 @@ class LocalCollection:
         # dedup by (value, external_id)
         seen_tuples: set[tuple[OrderValue, ExtendedPointId]] = set()
 
-        for value, external_id, internal_id in value_and_ids:
+        for value, _remainder, external_id, internal_id in value_and_ids:
             if start_from is not None:
                 if direction == models.Direction.ASC:
                     if value < start_from:

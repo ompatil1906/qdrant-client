@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 
 # These are the formats accepted by qdrant core
@@ -94,3 +95,18 @@ def parse(date_str: str) -> datetime | None:
         return parse_available_formats(date_str + ":00")
 
     return None
+
+
+def submicro_nanos(date_str: str) -> int:
+    """Digits past microseconds, in nanoseconds (0-999).
+
+    ``parse`` truncates the fraction so ``datetime`` can store it. Callers that
+    order or compare timestamps still need this remainder: ``...000001Z`` is
+    after ``...000000Z``.
+    """
+    if not isinstance(date_str, str):
+        return 0
+    fraction = re.search(r"\.(\d+)", date_str.lstrip())
+    if fraction is None or len(fraction.group(1)) <= 6:
+        return 0
+    return int(fraction.group(1)[6:9].ljust(3, "0"))
